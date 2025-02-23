@@ -2,13 +2,13 @@
 #inspired by https://github.com/Matuzas77/MNIST-0.17/blob/master/MNIST_final_solution.ipynb
 import sys
 import numpy as np
+from tinygrad.nn.state import get_parameters
 from tinygrad.tensor import Tensor
 from tinygrad.nn import BatchNorm2d, optim
 from tinygrad.helpers import getenv
-from datasets import fetch_mnist
+from extra.datasets import fetch_mnist
 from extra.augment import augment_img
-from extra.utils import get_parameters
-from extra.training import train, evaluate, sparse_categorical_crossentropy
+from extra.training import train, evaluate
 GPU = getenv("GPU")
 QUICK = getenv("QUICK")
 DEBUG = getenv("DEBUG")
@@ -16,10 +16,10 @@ DEBUG = getenv("DEBUG")
 class SqueezeExciteBlock2D:
   def __init__(self, filters):
     self.filters = filters
-    self.weight1 = Tensor.uniform(self.filters, self.filters//32)
-    self.bias1 = Tensor.uniform(1,self.filters//32)
-    self.weight2 = Tensor.uniform(self.filters//32, self.filters)
-    self.bias2 = Tensor.uniform(1, self.filters)
+    self.weight1 = Tensor.scaled_uniform(self.filters, self.filters//32)
+    self.bias1 = Tensor.scaled_uniform(1,self.filters//32)
+    self.weight2 = Tensor.scaled_uniform(self.filters//32, self.filters)
+    self.bias2 = Tensor.scaled_uniform(1, self.filters)
 
   def __call__(self, input):
     se = input.avg_pool2d(kernel_size=(input.shape[2], input.shape[3])) #GlobalAveragePool2D
@@ -36,8 +36,8 @@ class ConvBlock:
     self.h, self.w = h, w
     self.inp = inp
     #init weights
-    self.cweights = [Tensor.uniform(filters, inp if i==0 else filters, conv, conv) for i in range(3)]
-    self.cbiases = [Tensor.uniform(1, filters, 1, 1) for i in range(3)]
+    self.cweights = [Tensor.scaled_uniform(filters, inp if i==0 else filters, conv, conv) for i in range(3)]
+    self.cbiases = [Tensor.scaled_uniform(1, filters, 1, 1) for i in range(3)]
     #init layers
     self._bn = BatchNorm2d(128)
     self._seb = SqueezeExciteBlock2D(filters)
@@ -45,7 +45,7 @@ class ConvBlock:
   def __call__(self, input):
     x = input.reshape(shape=(-1, self.inp, self.w, self.h))
     for cweight, cbias in zip(self.cweights, self.cbiases):
-      x = x.pad2d(padding=[1,1,1,1]).conv2d(cweight).add(cbias).relu()
+      x = x.pad(padding=[1,1,1,1]).conv2d(cweight).add(cbias).relu()
     x = self._bn(x)
     x = self._seb(x)
     return x
@@ -53,8 +53,8 @@ class ConvBlock:
 class BigConvNet:
   def __init__(self):
     self.conv = [ConvBlock(28,28,1), ConvBlock(28,28,128), ConvBlock(14,14,128)]
-    self.weight1 = Tensor.uniform(128,10)
-    self.weight2 = Tensor.uniform(128,10)
+    self.weight1 = Tensor.scaled_uniform(128,10)
+    self.weight2 = Tensor.scaled_uniform(128,10)
 
   def parameters(self):
     if DEBUG: #keeping this for a moment
@@ -72,14 +72,14 @@ class BigConvNet:
     with open(filename+'.npy', 'wb') as f:
       for par in get_parameters(self):
         #if par.requires_grad:
-        np.save(f, par.cpu().data)
+        np.save(f, par.numpy())
 
   def load(self, filename):
     with open(filename+'.npy', 'rb') as f:
       for par in get_parameters(self):
         #if par.requires_grad:
         try:
-          par.cpu().data[:] = np.load(f)
+          par.numpy()[:] = np.load(f)
           if GPU:
             par.gpu()
         except:
@@ -93,7 +93,7 @@ class BigConvNet:
     x1 = x.avg_pool2d(kernel_size=(14,14)).reshape(shape=(-1,128)) #global
     x2 = x.max_pool2d(kernel_size=(14,14)).reshape(shape=(-1,128)) #global
     xo = x1.dot(self.weight1) + x2.dot(self.weight2)
-    return xo.logsoftmax()
+    return xo
 
 
 if __name__ == "__main__":
@@ -102,7 +102,7 @@ if __name__ == "__main__":
   BS = 32
 
   lmbd = 0.00025
-  lossfn = lambda out,y: sparse_categorical_crossentropy(out, y) + lmbd*(model.weight1.abs() + model.weight2.abs()).sum()
+  lossfn = lambda out,y: out.sparse_categorical_crossentropy(y) + lmbd*(model.weight1.abs() + model.weight2.abs()).sum()
   X_train, Y_train, X_test, Y_test = fetch_mnist()
   X_train = X_train.reshape(-1, 28, 28).astype(np.uint8)
   X_test = X_test.reshape(-1, 28, 28).astype(np.uint8)
