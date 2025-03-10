@@ -1,59 +1,136 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/geohot/tinygrad/master/docs/logo.png">
-</p>
+<div align="center">
 
---------------------------------------------------------------------
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/docs/logo_tiny_light.svg">
+  <img alt="tiny corp logo" src="/docs/logo_tiny_dark.svg" width="50%" height="50%">
+</picture>
 
-![Unit Tests](https://github.com/geohot/tinygrad/workflows/Unit%20Tests/badge.svg)
+tinygrad: For something between [PyTorch](https://github.com/pytorch/pytorch) and [karpathy/micrograd](https://github.com/karpathy/micrograd). Maintained by [tiny corp](https://tinygrad.org).
 
-[![tinygrad discord](https://discordapp.com/api/guilds/1068976834382925865/widget.png?style=banner2)](https://discord.gg/ZjZadyC7PK)
+<h3>
 
-For something in between a [pytorch](https://github.com/pytorch/pytorch) and a [karpathy/micrograd](https://github.com/karpathy/micrograd)
+[Homepage](https://github.com/tinygrad/tinygrad) | [Documentation](https://docs.tinygrad.org/) | [Discord](https://discord.gg/ZjZadyC7PK)
+
+</h3>
+
+[![GitHub Repo stars](https://img.shields.io/github/stars/tinygrad/tinygrad)](https://github.com/tinygrad/tinygrad/stargazers)
+[![Unit Tests](https://github.com/tinygrad/tinygrad/actions/workflows/test.yml/badge.svg)](https://github.com/tinygrad/tinygrad/actions/workflows/test.yml)
+[![Discord](https://img.shields.io/discord/1068976834382925865)](https://discord.gg/ZjZadyC7PK)
+
+</div>
+
+---
 
 This may not be the best deep learning framework, but it is a deep learning framework.
 
-The sub 1000 line core of it is in `tinygrad/`
+Due to its extreme simplicity, it aims to be the easiest framework to add new accelerators to, with support for both inference and training. If XLA is CISC, tinygrad is RISC.
 
-Due to its extreme simplicity, it aims to be the easiest framework to add new accelerators to, with support for both inference and training. Support the simple basic ops, and you get SOTA [vision](https://arxiv.org/abs/1905.11946) `models/efficientnet.py` and [language](https://arxiv.org/abs/1706.03762) `models/transformer.py` models.
+tinygrad is still alpha software, but we [raised some money](https://geohot.github.io/blog/jekyll/update/2023/05/24/the-tiny-corp-raised-5M.html) to make it good. Someday, we will tape out chips.
 
-We are working on support for the Apple Neural Engine and the Google TPU in the `accel/` folder. Eventually, [we will build custom hardware](https://geohot.github.io/blog/jekyll/update/2021/06/13/a-breakdown-of-ai-chip-companies.html) for tinygrad, and it will be blindingly fast. Now, it is slow.
+## Features
 
-This project is maintained by [tiny corp](https://tinygrad.org/).
+### LLaMA and Stable Diffusion
 
-### Installation
+tinygrad can run [LLaMA](/docs/showcase.md#llama) and [Stable Diffusion](/docs/showcase.md#stable-diffusion)!
 
-```bash
-git clone https://github.com/geohot/tinygrad.git
+### Laziness
+
+Try a matmul. See how, despite the style, it is fused into one kernel with the power of laziness.
+
+```sh
+DEBUG=3 python3 -c "from tinygrad import Tensor;
+N = 1024; a, b = Tensor.rand(N, N), Tensor.rand(N, N);
+c = (a.reshape(N, 1, N) * b.T.reshape(1, N, N)).sum(axis=2);
+print((c.numpy() - (a.numpy() @ b.numpy())).mean())"
+```
+
+And we can change `DEBUG` to `4` to see the generated code.
+
+### Neural networks
+
+As it turns out, 90% of what you need for neural networks are a decent autograd/tensor library.
+Throw in an optimizer, a data loader, and some compute, and you have all you need.
+
+```python
+from tinygrad import Tensor, nn
+
+class LinearNet:
+  def __init__(self):
+    self.l1 = Tensor.kaiming_uniform(784, 128)
+    self.l2 = Tensor.kaiming_uniform(128, 10)
+  def __call__(self, x:Tensor) -> Tensor:
+    return x.flatten(1).dot(self.l1).relu().dot(self.l2)
+
+model = LinearNet()
+optim = nn.optim.Adam([model.l1, model.l2], lr=0.001)
+
+x, y = Tensor.rand(4, 1, 28, 28), Tensor([2,4,3,7])  # replace with real mnist dataloader
+
+with Tensor.train():
+  for i in range(10):
+    optim.zero_grad()
+    loss = model(x).sparse_categorical_crossentropy(y).backward()
+    optim.step()
+    print(i, loss.item())
+```
+
+See [examples/beautiful_mnist.py](examples/beautiful_mnist.py) for the full version that gets 98% in ~5 seconds
+
+## Accelerators
+
+tinygrad already supports numerous accelerators, including:
+
+- [x] [GPU (OpenCL)](tinygrad/runtime/ops_gpu.py)
+- [x] [CPU (C Code)](tinygrad/runtime/ops_cpu.py)
+- [x] [LLVM](tinygrad/runtime/ops_llvm.py)
+- [x] [METAL](tinygrad/runtime/ops_metal.py)
+- [x] [CUDA](tinygrad/runtime/ops_cuda.py)
+- [x] [AMD](tinygrad/runtime/ops_amd.py)
+- [x] [NV](tinygrad/runtime/ops_nv.py)
+- [x] [QCOM](tinygrad/runtime/ops_qcom.py)
+- [x] [WEBGPU](tinygrad/runtime/ops_webgpu.py)
+
+And it is easy to add more! Your accelerator of choice only needs to support a total of ~25 low level ops.
+
+To check default accelerator run: `python3 -c "from tinygrad import Device; print(Device.DEFAULT)"`
+
+## Installation
+
+The current recommended way to install tinygrad is from source.
+
+### From source
+
+```sh
+git clone https://github.com/tinygrad/tinygrad.git
 cd tinygrad
 python3 -m pip install -e .
 ```
 
-### Contributing
+### Direct (master)
 
-There's a lot of interest in tinygrad lately. Here's some guidelines for contributing:
+```sh
+python3 -m pip install git+https://github.com/tinygrad/tinygrad.git
+```
 
-* Bugfixes are the best and always welcome! Like [this one](https://github.com/geohot/tinygrad/pull/421/files).
-* If you don't understand the code you are changing, don't change it!
-* All code golf PRs will be closed, but [conceptual cleanups](https://github.com/geohot/tinygrad/pull/372/files) are great.
-* Features are welcome. Though if you are adding a feature, you need to include tests.
-* Improving test coverage is great, with reliable non brittle tests.
+## Documentation
 
-### Example
+Documentation along with a quick start guide can be found on the [docs website](https://docs.tinygrad.org/) built from the [docs/](/docs) directory.
+
+### Quick example comparing to PyTorch
 
 ```python
-from tinygrad.tensor import Tensor
+from tinygrad import Tensor
 
 x = Tensor.eye(3, requires_grad=True)
 y = Tensor([[2.0,0,-2.0]], requires_grad=True)
 z = y.matmul(x).sum()
 z.backward()
 
-print(x.grad.numpy())  # dz/dx
-print(y.grad.numpy())  # dz/dy
+print(x.grad.tolist())  # dz/dx
+print(y.grad.tolist())  # dz/dy
 ```
 
-### Same example in torch
-
+The same thing but in PyTorch:
 ```python
 import torch
 
@@ -62,168 +139,44 @@ y = torch.tensor([[2.0,0,-2.0]], requires_grad=True)
 z = y.matmul(x).sum()
 z.backward()
 
-print(x.grad)  # dz/dx
-print(y.grad)  # dz/dy
+print(x.grad.tolist())  # dz/dx
+print(y.grad.tolist())  # dz/dy
 ```
 
-## Neural networks?
+## Contributing
 
-It turns out, a decent autograd tensor library is 90% of what you need for neural networks. Add an optimizer (SGD, RMSprop, and Adam implemented) from tinygrad.nn.optim, write some boilerplate minibatching code, and you have all you need.
+There has been a lot of interest in tinygrad lately. Following these guidelines will help your PR get accepted.
 
-### Neural network example (from test/test_mnist.py)
+We'll start with what will get your PR closed with a pointer to this section:
 
-```python
-from tinygrad.tensor import Tensor
-import tinygrad.nn.optim as optim
+- No code golf! While low line count is a guiding light of this project, anything that remotely looks like code golf will be closed. The true goal is reducing complexity and increasing readability, and deleting `\n`s does nothing to help with that.
+- All docs and whitespace changes will be closed unless you are a well-known contributor. The people writing the docs should be those who know the codebase the absolute best. People who have not demonstrated that shouldn't be messing with docs. Whitespace changes are both useless *and* carry a risk of introducing bugs.
+- Anything you claim is a "speedup" must be benchmarked. In general, the goal is simplicity, so even if your PR makes things marginally faster, you have to consider the tradeoff with maintainability and readability.
+- In general, the code outside the core `tinygrad/` folder is not well tested, so unless the current code there is broken, you shouldn't be changing it.
+- If your PR looks "complex", is a big diff, or adds lots of lines, it won't be reviewed or merged. Consider breaking it up into smaller PRs that are individually clear wins. A common pattern I see is prerequisite refactors before adding new functionality. If you can (cleanly) refactor to the point that the feature is a 3 line change, this is great, and something easy for us to review.
 
-class TinyBobNet:
-  def __init__(self):
-    self.l1 = Tensor.uniform(784, 128)
-    self.l2 = Tensor.uniform(128, 10)
+Now, what we want:
 
-  def forward(self, x):
-    return x.dot(self.l1).relu().dot(self.l2).logsoftmax()
-
-model = TinyBobNet()
-optim = optim.SGD([model.l1, model.l2], lr=0.001)
-
-# ... and complete like pytorch, with (x,y) data
-
-out = model.forward(x)
-loss = out.mul(y).mean()
-optim.zero_grad()
-loss.backward()
-optim.step()
-```
-
-## GPU and Accelerator Support
-
-tinygrad supports GPUs through PyOpenCL.
-
-```python
-from tinygrad.tensor import Tensor
-(Tensor.ones(4,4).gpu() + Tensor.ones(4,4).gpu()).cpu()
-```
-
-### ANE Support?! (broken)
-
-If all you want to do is ReLU, you are in luck! You can do very fast ReLU (at least 30 MEGAReLUs/sec confirmed)
-
-Requires your Python to be signed with `ane/lib/sign_python.sh` to add the `com.apple.ane.iokit-user-access` entitlement, which also requires `sudo nvram boot-args="amfi_get_out_of_my_way=1 ipc_control_port_options=0"`. Build the library with `ane/lib/build.sh`
-
-In order to set boot-args and for the AMFI kext to respect that arg, run `csrutil enable --without-kext --without-nvram` in recovery mode.
-
-```python
-from tinygrad.tensor import Tensor
-
-a = Tensor([-2,-1,0,1,2]).ane()
-b = a.relu()
-print(b.cpu())
-```
-
-Warning: do not rely on the ANE port. It segfaults sometimes. So if you were doing something important with tinygrad and wanted to use the ANE, you might have a bad time.
-
-### hlops (in tensor.py)
-
-hlops are syntactic sugar around mlops. They support most things torch does.
-
-### mlops
-
-mlops are mid level ops, there's 15 of them. They understand memory allocation and derivatives
-
-```
-Relu, Log, Exp                          # unary ops
-Sum, Max                                # reduce ops (with axis argument)
-Add, Sub, Mul, Pow                      # binary ops (no broadcasting, use expand)
-Reshape, Permute, Slice, Expand, Flip   # movement ops
-Conv2D(NCHW)                            # processing op (Matmul is also Conv2D)
-```
-
-You no longer need to write mlops for a new accelerator
-
-### Adding an accelerator (llops)
-
-The autodiff stuff is all in mlops now so you can focus on the raw operations
-
-```
-Buffer                                                     # class of memory on this device
-unary_op  (RELU, EXP, LOG, NEG, GT0)                       # A -> A
-reduce_op (SUM, MAX)                                       # A -> B (smaller size, B has 1 in shape)
-binary_op (ADD, SUB, MUL, DIV, POW, CMPEQ)                 # A + B -> C (all the same size)
-movement_op (RESHAPE, PERMUTE, PAD, SHRINK, EXPAND, FLIP)  # A -> B (different size)
-processing_op (CONV)                                       # A + B -> C
-```
-
-When tinygrad moves to lazy evaluation, optimizations will happen here.
-
-## ImageNet inference
-
-Despite being tiny, tinygrad supports the full EfficientNet. Pass in a picture to discover what it is.
-
-```bash
-ipython3 examples/efficientnet.py https://media.istockphoto.com/photos/hen-picture-id831791190
-```
-
-Or, if you have a webcam and cv2 installed
-
-```bash
-ipython3 examples/efficientnet.py webcam
-```
-
-PROTIP: Set "GPU=1" environment variable if you want this to go faster.
-
-PROPROTIP: Set "DEBUG=1" environment variable if you want to see why it's slow.
-
-### tinygrad supports Stable Diffusion!
-
-You might need to download the [weight](https://huggingface.co/CompVis/stable-diffusion-v-1-4-original/resolve/main/sd-v1-4.ckpt) of Stable Diffusion and put it into weights/
-
-Run `GPU=1 python3 examples/stable_diffusion.py`
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/geohot/tinygrad/master/docs/stable_diffusion_by_tinygrad.jpg">
-</p>
-
-<p align="center">
-"a horse sized cat eating a bagel"
-</p>
-
-### tinygrad supports GANs
-
-See `examples/mnist_gan.py`
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/geohot/tinygrad/master/docs/mnist_by_tinygrad.jpg">
-</p>
-
-### tinygrad supports yolo
-
-See `examples/yolov3.py`
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/geohot/tinygrad/master/docs/yolo_by_tinygrad.jpg">
-</p>
-
-## The promise of small
-
-tinygrad will always be below 1000 lines. If it isn't, we will revert commits until tinygrad becomes smaller.
-
-### Drawing Execution Graph
-
-* Nodes are Tensors
-* Black edge is a forward pass
-* Blue edge is a backward pass
-* Red edge is data the backward pass depends on
-* Purple edge is intermediates created in the forward
-
-```bash
-GRAPH=1 python3 test/test_mnist.py TestMNIST.test_sgd_onestep
-# requires dot, outputs /tmp/net.svg
-```
+- Bug fixes (with a regression test) are great! This library isn't 1.0 yet, so if you stumble upon a bug, fix it, write a test, and submit a PR, this is valuable work.
+- Solving bounties! tinygrad [offers cash bounties](https://docs.google.com/spreadsheets/d/1WKHbT-7KOgjEawq5h5Ic1qUWzpfAzuD_J06N1JwOCGs/edit?usp=sharing) for certain improvements to the library. All new code should be high quality and well tested.
+- Features. However, if you are adding a feature, consider the line tradeoff. If it's 3 lines, there's less of a bar of usefulness it has to meet over something that's 30 or 300 lines. All features must have regression tests. In general with no other constraints, your feature's API should match torch or numpy.
+- Refactors that are clear wins. In general, if your refactor isn't a clear win it will be closed. But some refactors are amazing! Think about readability in a deep core sense. A whitespace change or moving a few functions around is useless, but if you realize that two 100 line functions can actually use the same 110 line function with arguments while also improving readability, this is a big win. Refactors should pass [process replay](#process-replay-tests).
+- Tests/fuzzers. If you can add tests that are non brittle, they are welcome. We have some fuzzers in here too, and there's a plethora of bugs that can be found with them and by improving them. Finding bugs, even writing broken tests (that should pass) with `@unittest.expectedFailure` is great. This is how we make progress.
+- Dead code removal from core `tinygrad/` folder. We don't care about the code in extra, but removing dead code from the core library is great. Less for new people to read and be confused by.
 
 ### Running tests
 
-```bash
-python3 -m pytest
+You should install the pre-commit hooks with `pre-commit install`. This will run the linter, mypy, and a subset of the tests on every commit.
+
+For more examples on how to run the full test suite please refer to the [CI workflow](.github/workflows/test.yml).
+
+Some examples of running tests locally:
+```sh
+python3 -m pip install -e '.[testing]'  # install extra deps for testing
+python3 test/test_ops.py                # just the ops tests
+python3 -m pytest test/                 # whole test suite
 ```
 
+#### Process replay tests
+
+[Process replay](https://github.com/tinygrad/tinygrad/blob/master/test/external/process_replay/README.md) compares your PR's generated kernels against master. If your PR is a refactor or speedup without any expected behavior change, It should include [pr] in the pull request title.

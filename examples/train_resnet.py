@@ -2,12 +2,12 @@
 import numpy as np
 from PIL import Image
 
-from tinygrad.nn.optim import Adam
+from tinygrad.nn.state import get_parameters
+from tinygrad.nn import optim
 from tinygrad.helpers import getenv
-from extra.utils import get_parameters
 from extra.training import train, evaluate
-from models.resnet import ResNet
-from datasets import fetch_mnist
+from extra.models.resnet import ResNet
+from extra.datasets import fetch_mnist
 
 
 class ComposeTransforms:
@@ -30,16 +30,16 @@ if __name__ == "__main__":
   if TRANSFER:
     model.load_from_pretrained()
 
-  lr = 5e-5
+  lr = 5e-3
   transform = ComposeTransforms([
     lambda x: [Image.fromarray(xx, mode='L').resize((64, 64)) for xx in x],
     lambda x: np.stack([np.asarray(xx) for xx in x], 0),
     lambda x: x / 255.0,
     lambda x: np.tile(np.expand_dims(x, 1), (1, 3, 1, 1)).astype(np.float32),
   ])
-  for _ in range(10):
-    optim = Adam(get_parameters(model), lr=lr)
-    train(model, X_train, Y_train, optim, 50, BS=32, transform=transform)
-    acc, Y_test_preds = evaluate(model, X_test, Y_test, num_classes=10, return_predict=True, transform=transform)
+  for _ in range(5):
+    optimizer = optim.SGD(get_parameters(model), lr=lr, momentum=0.9)
+    train(model, X_train, Y_train, optimizer, 100, BS=32, transform=transform)
+    evaluate(model, X_test, Y_test, num_classes=classes, transform=transform)
     lr /= 1.2
     print(f'reducing lr to {lr:.7f}')
