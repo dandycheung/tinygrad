@@ -155,6 +155,10 @@ class TestFetch(unittest.TestCase):
     with self.assertRaises(gzip.BadGzipFile):
       fetch(no_gzip_url, gunzip=True)
 
+  def test_fetch_user_agent(self):
+    fetch("https://csrc.nist.gov/CSRC/media/Projects/lightweight-cryptography/documents/finalist-round/updated-submissions/sparkle.zip",
+          allow_caching=False)
+
 class TestFullyFlatten(unittest.TestCase):
   def test_fully_flatten(self):
     self.assertEqual(fully_flatten([[1, 3], [1, 2]]), [1, 3, 1, 2])
@@ -290,7 +294,7 @@ class TestPolyN(unittest.TestCase):
 
   def test_uop(self):
     from tinygrad.dtype import dtypes
-    from tinygrad.ops import UOp
+    from tinygrad.uop.ops import UOp
     from test.helpers import eval_uop
     np.testing.assert_allclose(eval_uop(polyN(UOp.const(dtypes.float, 1.0), [1.0, -2.0, 1.0])), 0.0)
     np.testing.assert_allclose(eval_uop(polyN(UOp.const(dtypes.float, 2.0), [1.0, -2.0, 1.0])), 1.0)

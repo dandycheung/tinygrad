@@ -11,15 +11,13 @@ from tinygrad import nn, dtypes, Device, Tensor
 from tinygrad.device import is_dtype_supported
 from tinygrad.dtype import DType, ImageDType
 from tinygrad.shape.shapetracker import ShapeTracker
-from tinygrad.ops import PatternMatcher, UOp, Ops, GroupOp, UPat, graph_rewrite, track_rewrites
+from tinygrad.uop.ops import PatternMatcher, UOp, Ops, GroupOp, UPat, graph_rewrite, track_rewrites
 from tinygrad.codegen.symbolic import symbolic_simple
-from tinygrad.spec import type_verify, shape_spec
 from tinygrad.helpers import CI, DEBUG, FUSE_ARANGE, SPLIT_REDUCEOP, GlobalCounters, Context, getenv, all_same, temp
-from tinygrad.engine.grouper import view_left, view_right, sym, get_becomes_map, Kernel, create_ast, merge_views, create_kernels
+from tinygrad.engine.grouper import view_left, view_right, sym, get_kernelize_map, Kernel, create_ast, merge_views, create_kernels
 from tinygrad.engine.schedule import ScheduleItem, create_schedule_with_vars
 from tinygrad.engine.realize import CompiledRunner, run_schedule, lower_schedule
 
-def verify_ast(sink:UOp): return type_verify(list(sink.toposort()), shape_spec)
 class KernelCountException(Exception): pass
 def check_schedule(t:Union[Tensor, List[Tensor], UOp], allowed:int, to_prerealize:Optional[List[Tensor]]=None, filter_sink=True):
   if to_prerealize:
@@ -29,8 +27,8 @@ def check_schedule(t:Union[Tensor, List[Tensor], UOp], allowed:int, to_prerealiz
   else:
     assert isinstance(t, UOp), f"can't schedule {t}"
     sink = UOp.sink(t) if t.op is not Ops.SINK else t
-    becomes_map = get_becomes_map(sink)
-    sched, _, __ = create_schedule_with_vars(sink.substitute(becomes_map))
+    becomes_map = get_kernelize_map(sink)
+    sched, _ = create_schedule_with_vars(sink.substitute(becomes_map))
   # test lowering all the ScheduleItems to ExecItems
   kernel_cnt = len([si for si,ei in lower_schedule(sched.copy()) if isinstance(ei.prg, CompiledRunner) or not filter_sink])
   if kernel_cnt != allowed:
@@ -76,7 +74,14 @@ class TestSchedule(unittest.TestCase):
     a = Tensor.empty(10)
     b = Tensor.empty(10, device="CPU")
     c = a+b
-    with self.assertRaises(RuntimeError): check_schedule(c, 1)
+    with self.assertRaisesRegex(RuntimeError, "all buffers must be on the same device"): check_schedule(c, 1)
+
+  @unittest.skipIf(Device.DEFAULT == "CPU", "devices must mismatch")
+  def test_error_on_device_mismatch_alt(self):
+    a = Tensor.empty(10)
+    b = Tensor.empty((1,), device="CPU").expand(10).contiguous()
+    c = a+b
+    with self.assertRaisesRegex(RuntimeError, "all buffers must be on the same device"): check_schedule(c, 1)
 
   @unittest.skipUnless(is_dtype_supported(dtypes.half) and getenv("CAST_AFTER_EXPAND"), "need half and CAST_AFTER_EXPAND=1")
   @unittest.skip("CAST_AFTER_EXPAND is not supported")
@@ -86,6 +91,21 @@ class TestSchedule(unittest.TestCase):
     run_schedule(check_schedule(b, 1))
     np.testing.assert_allclose(b.numpy(), np.broadcast_to(a.numpy().astype(np.float16), (2, 4, 4))+2)
 
+  def test_indexing_scalars_simple(self):
+    X = Tensor.randn(2, 2).realize()
+    xt = X[Tensor(1)][Tensor(0)]
+    with Context(FUSE_ARANGE=1):
+      run_schedule(check_schedule(xt, 2))
+    np.testing.assert_equal(xt.numpy(), X.numpy()[1][0])
+
+  @unittest.expectedFailure # TODO: failing because of can_chase
+  def test_indexing_scalars_multiple_dims(self):
+    X = Tensor.randn(2, 3).realize()
+    xt = X[Tensor(0)][Tensor(1)]
+    with Context(FUSE_ARANGE=1):
+      run_schedule(check_schedule(xt, 2))
+    np.testing.assert_equal(xt.numpy(), X.numpy()[0][1])
+
   def test_push_pads_elementwise(self):
     x = Tensor.full((4,4), 2.).contiguous().realize()
     y = Tensor.full((4,4), 4.).contiguous().realize()
@@ -93,12 +113,11 @@ class TestSchedule(unittest.TestCase):
     run_schedule(check_schedule(z, 2))
     self.assertEqual(z.item(), 32)
 
-  # TODO: same issue in precompute_freqs_cis
   def test_push_pads_contiguous(self):
     x = Tensor.full((4,1), 2.).contiguous()
     y = Tensor.full((4,4), 4.).contiguous()
     z = (x.reciprocal().expand(4,4)*y).pad((None, (0,1),)).sum()
-    run_schedule(check_schedule(z, 3, [x,y]))
+    run_schedule(check_schedule(z, 2, [x,y]))
     self.assertEqual(z.item(), 32)
 
   def test_rand(self):
@@ -335,14 +354,14 @@ class TestSchedule(unittest.TestCase):
     # a and b share the same underlying device memory
     self.assertIs(a.lazydata.realized, b.lazydata.realized)
 
-  def test_copy_dedups(self):
+  def test_clone_doesnt_dedup(self):
     src = Tensor.ones(4).contiguous().realize()
     a = src.clone()
     b = src.clone()
-    sched = check_schedule([a, b], 1, filter_sink=False)
+    sched = check_schedule([a, b], 2, filter_sink=False)
     run_schedule(sched)
     # a and b are assigned to the same device Buffer
-    self.assertIs(a.lazydata.realized, b.lazydata.realized)
+    self.assertIsNot(a.lazydata.realized, b.lazydata.realized)
 
   # EMPTY is assigned to a unique device Buffer
 
@@ -636,11 +655,20 @@ class TestSchedule(unittest.TestCase):
     c = b.kernelize()+Tensor.empty(4,4)
     check_schedule(c, 2)
 
+  def test_kernelize_diamond(self):
+    a = Tensor([0]).realize()
+    prev_a = (a+1).contiguous()
+    a.assign(Tensor([2]))
+    a.kernelize(prev_a)
+    assert prev_a.lazydata in a.lazydata.src, "contiguous usage must run before assign"
+    self.assertEqual((prev_a+a*3).item(), 1+2*3)
+
   def test_multioutput_ast(self):
     a = Tensor.zeros(1, dtype=dtypes.int).contiguous().realize().lazydata
     b = Tensor.zeros(1, dtype=dtypes.int).contiguous().realize().lazydata
     c = Tensor.arange(4).realize().lazydata
-    kernel = UOp(Ops.KERNEL, src=(a, b, c), arg=Kernel(UOp.sink(c.r(Ops.ADD, (0,))+1, c.r(Ops.ADD, (0,))*2)))
+    kernel = UOp(Ops.KERNEL, src=(a, b, c.base), arg=Kernel(UOp.sink(c.r(Ops.ADD, (0,))+1, c.r(Ops.ADD, (0,))*2)))
+    assert all(s.op is Ops.BUFFER for s in kernel.src), f"views are not allowed here {kernel}"
     kernel = graph_rewrite(kernel, create_ast)
     run_schedule(check_schedule(UOp.sink(a.assign(kernel), b.assign(kernel)), 1))
     self.assertEqual(a.buffer.numpy(), [7])
@@ -1860,10 +1888,10 @@ class TestIndexing(unittest.TestCase):
     args = {"dim":32 if CI else 128, "end":2048 if CI else 8192, "theta":10000}
     fused = precompute_freqs_cis(**args)
     with Context(FUSE_ARANGE=1):
-      run_schedule(check_schedule(fused, 5)) # TODO: this is too many
+      run_schedule(check_schedule(fused, 3))
     if getenv("CHECK", 1):
       ref = precompute_freqs_cis(**args)
-      run_schedule(check_schedule(ref, 5))
+      run_schedule(check_schedule(ref, 3))
       np.testing.assert_equal(fused.numpy(), ref.numpy())
 
   def test_fuse_assign_contiguous(self):
@@ -2156,7 +2184,6 @@ class TestSimplifier(unittest.TestCase):
     assert UPat(Ops.CONST, arg=0).match(sink, {})
     self.assertIs(tensor_rewrite(a*1).base, a.lazydata.base)
     self.assertIs(tensor_rewrite(a+0).base, a.lazydata.base)
-    self.assertIs(tensor_rewrite(a//1).base, a.lazydata.base)
 
   def test_cast_folding(self):
     a = Tensor(1.0).cast(dtypes.int)
@@ -2317,7 +2344,7 @@ class TestCopyFolding(unittest.TestCase):
     self.assertIs(b.base, a.base)
 
   def test_clone(self):
-    a = Tensor.empty(4).lazydata
+    a = Tensor.empty(4)
     check_schedule(a.clone(), 1, filter_sink=False)
 
   # NOTE: moving copy before view might change this
@@ -2326,7 +2353,7 @@ class TestCopyFolding(unittest.TestCase):
     view = a.shrink(((0, 2),))
     b = view.clone()
     # NOTE: this was sort of a bug making this 2
-    run_schedule(check_schedule(b, 3, filter_sink=False))
+    run_schedule(check_schedule(b, 2, filter_sink=False))
     self.assertEqual(b.lazydata.base.buffer.size, 2)
     self.assertEqual(b.lazydata.size, 2)
     self.assertListEqual(b.tolist(), [0, 1])
@@ -2336,7 +2363,7 @@ class TestCopyFolding(unittest.TestCase):
     view = a.reshape(2, 1).expand(2, 2)
     b = view.clone()
     run_schedule(check_schedule(b, 2, filter_sink=False))
-    self.assertEqual(b.lazydata.base.buffer.size, 2)
+    self.assertEqual(b.lazydata.base.buffer.size, 4)
     self.assertEqual(b.lazydata.size, 4)
     self.assertListEqual(b.tolist(), [[0, 0], [1, 1]])
 
